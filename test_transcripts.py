@@ -140,6 +140,29 @@ def test_first_cue_at_zero_with_no_blank_line_before_it():
     assert lines == [(0.0, "Hello world")]
 
 
+def test_bom_prefixed_file():
+    raw = (
+        "﻿WEBVTT\n\n"
+        "00:00:01.000 --> 00:00:02.000\n"
+        "First line\n"
+    )
+    lines = extract_cue_lines(raw)
+    assert lines == [(1.0, "First line")]
+
+
+def test_bom_prefixed_cue_with_no_header_survives():
+    # No WEBVTT header at all — the BOM prefixes the timestamp line itself.
+    # Without stripping it, the anchored timestamp regex fails to match
+    # "﻿00:00:01.000 -->..." and the entire first cue, timestamp and text,
+    # is silently dropped. This is what proves the fix isn't a no-op: a
+    # BOM before a WEBVTT header happens to get discarded either way (the
+    # header line is dropped regardless), but a BOM before real content
+    # with no header to absorb it loses that content unless it's stripped.
+    raw = "﻿00:00:01.000 --> 00:00:02.000\nHello world\n"
+    lines = extract_cue_lines(raw)
+    assert lines == [(1.0, "Hello world")]
+
+
 def test_full_parse_vtt_end_to_end():
     raw = (
         "WEBVTT\nKind: captions\nLanguage: en\n\n"

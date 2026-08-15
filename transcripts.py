@@ -66,6 +66,9 @@ def _is_droppable(cleaned: str) -> bool:
 def extract_cue_lines(raw_text: str) -> list[tuple[float, str]]:
     """Line-based VTT state machine. Returns (start_seconds, text) for every
     surviving cue text line, duplicates included (dedupe is a separate step)."""
+    if raw_text.startswith("﻿"):
+        raw_text = raw_text[1:]
+
     lines: list[tuple[float, str]] = []
     skip_block = False
     reading_text = False
