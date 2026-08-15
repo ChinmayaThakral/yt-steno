@@ -2,6 +2,10 @@ const $ = (id) => document.getElementById(id);
 const qs = (sel, root = document) => root.querySelector(sel);
 const qsa = (sel, root = document) => [...root.querySelectorAll(sel)];
 
+// Explicit locale so digit grouping is consistent regardless of the
+// viewer's browser/OS locale (e.g. en-IN groups as 1,07,409, not 107,409).
+const fmtNum = (n) => Number(n ?? 0).toLocaleString("en-US");
+
 let currentRunId = null;
 let pollTimer = null;
 let currentVideoId = null;
@@ -192,8 +196,8 @@ function showResults(job) {
   const stats = job.stats || {};
   $("stat-videos").textContent = stats.videos ?? job.videos.length;
   $("stat-captioned").textContent = stats.captioned ?? "–";
-  $("stat-words").textContent = (stats.words ?? 0).toLocaleString();
-  $("stat-tokens").textContent = (stats.tokens ?? 0).toLocaleString();
+  $("stat-words").textContent = fmtNum(stats.words);
+  $("stat-tokens").textContent = fmtNum(stats.tokens);
   $("stat-bundles").textContent = (stats.bundles || []).length;
 
   renderVideoTable(job.videos);
@@ -211,11 +215,21 @@ function renderVideoTable(videos) {
       <td class="title-cell">${escapeHtml(v.title)}</td>
       <td class="mono">${formatUploadDate(v.uploaded)}</td>
       <td class="mono">${formatDuration(v.duration)}</td>
-      <td class="mono">${v.words ? v.words.toLocaleString() : "–"}</td>
+      <td class="mono">${v.words ? fmtNum(v.words) : "–"}</td>
       <td><span class="status-pill ${v.status}" title="${escapeHtml(v.note || "")}">${v.status.replace("-", " ")}</span></td>
     `;
     if (clickable) {
-      tr.addEventListener("click", () => openTranscript(v.video_id, v.title));
+      tr.tabIndex = 0;
+      tr.setAttribute("role", "button");
+      tr.setAttribute("aria-label", `Open transcript for ${v.title}`);
+      const open = () => openTranscript(v.video_id, v.title);
+      tr.addEventListener("click", open);
+      tr.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          open();
+        }
+      });
     }
     body.appendChild(tr);
   }
@@ -246,7 +260,9 @@ function renderBundles(bundles) {
     card.className = "bundle-card";
     card.innerHTML = `
       <div class="bundle-n">Bundle ${b.n}</div>
-      <div class="bundle-meta">${b.videos} video${b.videos === 1 ? "" : "s"} · ${(b.chars / 1024).toFixed(0)} KB · ~${b.tokens.toLocaleString()} est. tokens</div>
+      <div class="bundle-meta">${b.videos} video${b.videos === 1 ? "" : "s"} · ${(b.chars / 1024).toFixed(0)} KB · ~${fmtNum(b.tokens)} est. tokens
+        <span class="info-dot" tabindex="0" data-tooltip="characters ÷ 4, the usual rough heuristic — not an exact tokenizer count">?</span>
+      </div>
       <div class="bundle-actions">
         <button class="btn btn-primary btn-sm" data-action="copy" data-n="${b.n}" data-tokens="${b.tokens}">Copy</button>
         <button class="btn btn-ghost btn-sm" data-action="download" data-n="${b.n}">Download</button>
@@ -264,7 +280,7 @@ $("bundle-grid").addEventListener("click", async (e) => {
   if (btn.dataset.action === "copy") {
     const text = await (await fetch(url)).text();
     await navigator.clipboard.writeText(text);
-    toast(`Copied — ~${parseInt(btn.dataset.tokens, 10).toLocaleString()} est. tokens`);
+    toast(`Copied — ~${fmtNum(parseInt(btn.dataset.tokens, 10))} est. tokens`);
   } else {
     const a = document.createElement("a");
     a.href = url;
@@ -384,7 +400,7 @@ async function refreshRunChips() {
     return;
   }
   el.innerHTML = runs.map((r) => `
-    <div class="run-chip" data-run-id="${r.run_id}">
+    <div class="run-chip" data-run-id="${r.run_id}" tabindex="0" role="button" aria-label="Open run: ${escapeHtml(r.source || r.url)}">
       <span class="chip-status ${r.status}"></span>
       <span>${escapeHtml(r.source || r.url)}</span>
       <button class="chip-delete" data-delete="${r.run_id}" title="Delete this run">×</button>
@@ -392,9 +408,17 @@ async function refreshRunChips() {
   `).join("");
 
   qsa(".run-chip").forEach((chip) => {
+    const open = () => startWatchingRun(chip.dataset.runId);
     chip.addEventListener("click", (e) => {
       if (e.target.closest(".chip-delete")) return;
-      startWatchingRun(chip.dataset.runId);
+      open();
+    });
+    chip.addEventListener("keydown", (e) => {
+      if (e.target.closest(".chip-delete")) return;
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        open();
+      }
     });
   });
   qsa("[data-delete]").forEach((btn) => {

@@ -311,12 +311,66 @@ input[type="text"]:focus, input[type="number"]:focus, select:focus {
   color: var(--muted);
 }
 
+.info-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1px solid var(--muted);
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: 0;
+  margin-left: 4px;
+  cursor: default;
+  position: relative;
+  vertical-align: middle;
+}
+
+.info-dot:hover::after, .info-dot:focus-visible::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: 220px;
+  background: var(--ink);
+  color: var(--paper);
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.4;
+  text-transform: none;
+  letter-spacing: normal;
+  padding: 9px 11px;
+  border-radius: 6px;
+  z-index: 10;
+  pointer-events: none;
+}
+
+.info-dot:hover::before, .info-dot:focus-visible::before {
+  content: "";
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 5px solid transparent;
+  border-top-color: var(--ink);
+  z-index: 10;
+}
+
 /* ---------- Tabs ---------- */
 
 .tabs {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 4px;
+  row-gap: 8px;
+  column-gap: 4px;
   margin-bottom: 18px;
   border-bottom: 1.5px solid var(--rule);
 }
@@ -594,4 +648,5 @@ input[type="text"]:focus, input[type="number"]:focus, select:focus {
   #stats-panel { gap: 16px; }
   .video-table { display: block; overflow-x: auto; }
   .search-row { flex-direction: column; align-items: stretch; }
+  .info-dot:hover::after, .info-dot:focus-visible::after { width: 160px; }
 }
