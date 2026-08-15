@@ -1,0 +1,10 @@
+data/
+probe-output.txt
+__pycache__/
+*.db
+*.db-wal
+*.db-shm
+.pytest_cache/
+venv/
+.DS_Store
+server.log
