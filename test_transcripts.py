@@ -4,8 +4,13 @@ from transcripts import (
     clean_cue_text,
     dedupe_rolling_captions,
     extract_cue_lines,
+    pack_bundles,
     parse_timestamp,
     parse_vtt,
+    slugify,
+    to_passages,
+    to_prose,
+    to_timed,
 )
 
 
@@ -153,3 +158,77 @@ def test_full_parse_vtt_end_to_end():
         (3.51, "to understand about compounding"),
         (6.21, "is that it starts slow"),
     ]
+
+
+# ---------------------------------------------------------------------------
+# Output shapes
+# ---------------------------------------------------------------------------
+
+def test_to_prose_reflows_into_paragraphs():
+    lines = [(0.0, " ".join(f"w{i}" for i in range(250)))]
+    prose = to_prose(lines, words_per_paragraph=110)
+    paragraphs = prose.split("\n\n")
+    assert len(paragraphs) == 3
+    assert len(paragraphs[0].split()) == 110
+    assert len(paragraphs[2].split()) == 30
+
+
+def test_to_timed_formats_timestamps():
+    lines = [(65.0, "hello"), (3661.0, "world")]
+    timed = to_timed(lines)
+    assert "[00:01:05] hello" in timed
+    assert "[01:01:01] world" in timed
+
+
+def test_passages_chunk_to_45_words_with_first_appearance_time():
+    lines = [(float(i), f"w{i}") for i in range(100)]
+    passages = to_passages(lines, video_id="vid1", run_id="run1", title="T", chunk_words=45)
+    assert len(passages) == 3
+    assert [len(p["body"].split()) for p in passages] == [45, 45, 10]
+    assert passages[0]["at"] == 0.0
+    assert passages[1]["at"] == 45.0
+    assert passages[2]["at"] == 90.0
+    assert all(p["video_id"] == "vid1" and p["run_id"] == "run1" for p in passages)
+
+
+# ---------------------------------------------------------------------------
+# Bundle packing
+# ---------------------------------------------------------------------------
+
+def test_bundles_never_split_a_document_and_isolate_oversized_ones():
+    budget = 20_000
+    documents = [
+        {"title": "A", "video_id": "v1", "upload_date": "20200101", "text": "word " * 1000},
+        {"title": "B", "video_id": "v2", "upload_date": "20200102", "text": "word " * 1000},
+        {"title": "Huge", "video_id": "v3", "upload_date": "20200103", "text": "word " * 100_000},
+        {"title": "C", "video_id": "v4", "upload_date": "20200104", "text": "word " * 1000},
+    ]
+    bundles = pack_bundles(documents, source="Test Channel", budget_chars=budget)
+
+    all_titles = [t for b in bundles for t in b["titles"]]
+    assert sorted(all_titles) == sorted(d["title"] for d in documents)  # nothing dropped, nothing duplicated
+
+    huge_bundles = [b for b in bundles if "Huge" in b["titles"]]
+    assert len(huge_bundles) == 1
+    assert huge_bundles[0]["videos"] == 1  # isolated, not merged with anything
+
+    for b in bundles:
+        if "Huge" not in b["titles"]:
+            assert b["chars"] <= budget
+
+
+# ---------------------------------------------------------------------------
+# Slugify
+# ---------------------------------------------------------------------------
+
+def test_slugify_handles_special_chars_emoji_and_rtl():
+    result = slugify("Why 90% Fail: A Post-Mortem | Ep. 44 🔥 שלום עולם", "abc123XYZ_-")
+    assert isinstance(result, str)
+    for bad in '\\/*?:"<>|':
+        assert bad not in result.replace("[abc123XYZ_-]", "")
+    assert "[abc123XYZ_-]" in result
+
+
+def test_slugify_handles_empty_title():
+    result = slugify("", "vid1")
+    assert result == "untitled [vid1]"

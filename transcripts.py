@@ -121,3 +121,139 @@ def dedupe_rolling_captions(lines: list[tuple[float, str]], window_size: int = 6
 
 def parse_vtt(raw_text: str) -> list[tuple[float, str]]:
     return dedupe_rolling_captions(extract_cue_lines(raw_text))
+
+
+# ---------------------------------------------------------------------------
+# Output shapes
+# ---------------------------------------------------------------------------
+
+def to_prose(lines: list[tuple[float, str]], words_per_paragraph: int = 110) -> str:
+    words: list[str] = []
+    for _, text in lines:
+        words.extend(text.split())
+    if not words:
+        return ""
+    paragraphs = [
+        " ".join(words[i:i + words_per_paragraph])
+        for i in range(0, len(words), words_per_paragraph)
+    ]
+    return "\n\n".join(paragraphs)
+
+
+def to_timed(lines: list[tuple[float, str]]) -> str:
+    return "\n".join(f"[{format_hhmmss(ts)}] {text}" for ts, text in lines)
+
+
+def to_passages(
+    lines: list[tuple[float, str]],
+    video_id: str,
+    run_id: str,
+    title: str,
+    chunk_words: int = 45,
+) -> list[dict]:
+    """Group cues into ~45-word passages. This is the search index unit —
+    indexing individual cue lines (5-7 words) would make any search phrase
+    spanning a line break silently unfindable."""
+    passages: list[dict] = []
+    buf: list[str] = []
+    buf_start: Optional[float] = None
+
+    def flush():
+        if buf:
+            passages.append({
+                "body": " ".join(buf),
+                "video_id": video_id,
+                "run_id": run_id,
+                "at": buf_start,
+                "title": title,
+            })
+
+    for ts, text in lines:
+        words = text.split()
+        if not words:
+            continue
+        if buf_start is None:
+            buf_start = ts
+        buf.extend(words)
+        if len(buf) >= chunk_words:
+            flush()
+            buf = []
+            buf_start = None
+
+    flush()
+    return passages
+
+
+# ---------------------------------------------------------------------------
+# Bundle packing
+# ---------------------------------------------------------------------------
+
+def _doc_header(title: str, video_id: str, upload_date: str) -> str:
+    return f"===== {title} · {video_id} · {upload_date} ====="
+
+
+def _doc_block(doc: dict) -> str:
+    return f"{_doc_header(doc['title'], doc['video_id'], doc.get('upload_date') or 'unknown')}\n\n{doc['text']}\n"
+
+
+def pack_bundles(documents: list[dict], source: str, budget_chars: int = 300_000) -> list[dict]:
+    """Greedy-fill documents into bundles under budget_chars. A document is
+    never split across two bundles; an oversized single document gets a
+    bundle of its own."""
+    groups: list[list[dict]] = []
+    current: list[dict] = []
+    current_chars = 0
+
+    for doc in documents:
+        block = _doc_block(doc)
+        block_len = len(block)
+        if current and current_chars + block_len > budget_chars:
+            groups.append(current)
+            current, current_chars = [], 0
+        current.append(doc)
+        current_chars += block_len
+        if block_len > budget_chars:
+            groups.append(current)
+            current, current_chars = [], 0
+
+    if current:
+        groups.append(current)
+
+    total = len(groups)
+    bundles = []
+    for i, docs in enumerate(groups, start=1):
+        body = "\n".join(_doc_block(d) for d in docs)
+        titles = [d["title"] for d in docs]
+        manifest = (
+            f"STENO BUNDLE {i} of {total}\n"
+            f"source: {source}\n"
+            f"videos: {len(docs)}\n"
+            f"chars: {len(body)}\n"
+            f"est. tokens: {len(body) // 4}\n"
+            f"titles:\n" + "\n".join(f"  - {t}" for t in titles) + "\n\n"
+        )
+        text = manifest + body
+        bundles.append({
+            "index": i,
+            "videos": len(docs),
+            "chars": len(text),
+            "tokens": len(text) // 4,
+            "titles": titles,
+            "text": text,
+        })
+    return bundles
+
+
+# ---------------------------------------------------------------------------
+# Filenames
+# ---------------------------------------------------------------------------
+
+_ILLEGAL_FS_CHARS = re.compile(r'[\\/*?:"<>|\r\n\t]')
+
+
+def slugify(title: str, video_id: str) -> str:
+    base = _ILLEGAL_FS_CHARS.sub("_", title or "").strip()
+    base = re.sub(r"\s+", " ", base)[:120].strip()
+    if not base:
+        base = "untitled"
+    return f"{base} [{video_id}]"
