@@ -1,6 +1,7 @@
 import pytest
 
 from transcripts import (
+    Store,
     clean_cue_text,
     dedupe_rolling_captions,
     extract_cue_lines,
@@ -232,3 +233,37 @@ def test_slugify_handles_special_chars_emoji_and_rtl():
 def test_slugify_handles_empty_title():
     result = slugify("", "vid1")
     assert result == "untitled [vid1]"
+
+
+# ---------------------------------------------------------------------------
+# Store: round trip + FTS phrase across a cue boundary
+# ---------------------------------------------------------------------------
+
+def test_store_round_trip_search(tmp_path):
+    store = Store(tmp_path / "steno.db")
+    store.create_run("run1", "https://youtube.com/@x", {})
+    store.add_passages([
+        {"body": "the quick brown fox jumps over the lazy dog", "video_id": "vid1", "run_id": "run1", "at": 12.0, "title": "Video One"},
+    ])
+    results = store.search("fox", run_id="run1")
+    assert len(results) == 1
+    assert results[0]["video_id"] == "vid1"
+    assert results[0]["at"] == 12.0
+    assert results[0]["url"] == "https://youtu.be/vid1?t=12"
+
+
+def test_fts_phrase_spanning_original_cue_boundary(tmp_path):
+    # Two source cue lines, each 3 words — a naive per-cue index could never
+    # find a phrase spanning the boundary between them. Chunking into one
+    # 45-word-or-fewer passage keeps the phrase searchable.
+    lines = [(0.0, "the quick brown"), (1.0, "fox jumps over")]
+    passages = to_passages(lines, video_id="vid1", run_id="run1", title="Video One", chunk_words=45)
+    assert len(passages) == 1  # both cues landed in the same passage
+
+    store = Store(tmp_path / "steno.db")
+    store.create_run("run1", "https://youtube.com/@x", {})
+    store.add_passages(passages)
+
+    results = store.search('"brown fox"', run_id="run1")
+    assert len(results) == 1
+    assert results[0]["video_id"] == "vid1"
