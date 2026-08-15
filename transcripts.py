@@ -426,7 +426,7 @@ class Store:
 # yt-dlp integration
 # ---------------------------------------------------------------------------
 
-BOT_CHECK_RE = re.compile(r"sign in|confirm you.?re not a bot|429|too many requests", re.I)
+BOT_CHECK_RE = re.compile(r"confirm you.?re not a bot|429|too many requests", re.I)
 
 
 def is_bot_check_error(message: str) -> bool:
@@ -512,8 +512,23 @@ def enumerate_channel(url: str, limit: int = 0, include_shorts: bool = True) -> 
     if limit:
         videos = videos[:limit]
 
-    source = info.get("channel") or info.get("uploader") or info.get("title") or "channel"
-    return videos, source
+    return videos, resolve_source_name(info)
+
+
+def resolve_source_name(info: dict) -> str:
+    """For a channel's own page, title == channel == uploader, so preferring
+    channel is harmless. For a standalone/curated playlist, channel and
+    uploader are the *playlist's creator* — often unrelated to any of the
+    videos inside it — while title is the playlist's actual name. Preferring
+    channel there produces a source name (and therefore a zip filename and
+    run chip) that names the wrong thing entirely. Pulled out of
+    enumerate_channel so it's testable against a constructed info dict
+    without a network call."""
+    title = info.get("title")
+    channel = info.get("channel") or info.get("uploader")
+    if title and channel and title != channel:
+        return title
+    return channel or title or "channel"
 
 
 def choose_best_vtt(workdir: Path, video_id: str, lang: str) -> Optional[Path]:

@@ -10,6 +10,7 @@ from transcripts import (
     pack_bundles,
     parse_timestamp,
     parse_vtt,
+    resolve_source_name,
     slugify,
     to_passages,
     to_prose,
@@ -402,3 +403,44 @@ def test_bot_check_matches_real_429_message():
 def test_bot_check_does_not_match_unrelated_errors():
     for msg in ["Video unavailable", "This video is private", "HTTP Error 404: Not Found"]:
         assert not is_bot_check_error(msg)
+
+
+def test_bot_check_does_not_match_private_video_sign_in_boilerplate():
+    # Real message from a genuinely private video, hit while running a real
+    # playlist end to end. yt-dlp's instructional text about *how* to
+    # authenticate for a private video also contains the words "sign in" —
+    # a naive `sign in` substring match misclassified a permanently private
+    # video as a transient bot check and told the user to raise the pause,
+    # which was never going to fix it.
+    msg = ("ERROR: [youtube] dutqXP9DqJU: Private video. Sign in if you've "
+           "been granted access to this video. Use --cookies-from-browser "
+           "or --cookies for the authentication.")
+    assert not is_bot_check_error(msg)
+
+
+# ---------------------------------------------------------------------------
+# resolve_source_name: playlist creator vs. playlist title
+# ---------------------------------------------------------------------------
+
+def test_source_name_prefers_channel_when_it_matches_title():
+    # A channel's own page: title, channel, and uploader are all the same
+    # string. Real observed shape for https://www.youtube.com/@OpenAI.
+    info = {"title": "OpenAI", "channel": "OpenAI", "uploader": "OpenAI"}
+    assert resolve_source_name(info) == "OpenAI"
+
+
+def test_source_name_prefers_title_for_a_curated_playlist():
+    # A standalone playlist whose creator is unrelated to its contents.
+    # Real observed shape for a curated multi-speaker TED-talks playlist.
+    info = {"title": "7 Must Watch Singapore TED Talks", "channel": "Responsible Cyber",
+            "uploader": "Responsible Cyber"}
+    assert resolve_source_name(info) == "7 Must Watch Singapore TED Talks"
+
+
+def test_source_name_falls_back_when_title_missing():
+    info = {"channel": "Some Channel"}
+    assert resolve_source_name(info) == "Some Channel"
+
+
+def test_source_name_falls_back_to_generic_when_everything_missing():
+    assert resolve_source_name({}) == "channel"
