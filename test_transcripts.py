@@ -2,9 +2,11 @@ import pytest
 
 from transcripts import (
     Store,
+    choose_best_vtt,
     clean_cue_text,
     dedupe_rolling_captions,
     extract_cue_lines,
+    is_bot_check_error,
     pack_bundles,
     parse_timestamp,
     parse_vtt,
@@ -12,6 +14,7 @@ from transcripts import (
     to_passages,
     to_prose,
     to_timed,
+    walk_playlist_entries,
 )
 
 
@@ -267,3 +270,112 @@ def test_fts_phrase_spanning_original_cue_boundary(tmp_path):
     results = store.search('"brown fox"', run_id="run1")
     assert len(results) == 1
     assert results[0]["video_id"] == "vid1"
+
+
+# ---------------------------------------------------------------------------
+# choose_best_vtt ranking
+# ---------------------------------------------------------------------------
+
+def test_choose_best_vtt_prefers_exact_then_non_orig_then_shortest(tmp_path):
+    for name in ["abc.en-orig.vtt", "abc.en-US.vtt", "abc.en.vtt"]:
+        (tmp_path / name).write_text("WEBVTT\n")
+    chosen = choose_best_vtt(tmp_path, "abc", "en")
+    assert chosen.name == "abc.en.vtt"
+
+
+# ---------------------------------------------------------------------------
+# walk_playlist_entries: cross-tab duplicate id
+# ---------------------------------------------------------------------------
+
+def test_walk_dedupes_video_appearing_under_two_tabs():
+    # A video that was streamed live and is now archived shows up under both
+    # the Videos tab and the Live tab with the same id. A wrong walk would
+    # count it twice — doubling its weight in every bundle and returning it
+    # twice in search. Constructed directly rather than hunting for a real
+    # channel where this happens naturally, since it's the one branch a
+    # wrong result is invisible in.
+    fake_info = {
+        "title": "Fake Channel",
+        "entries": [
+            {
+                "title": "Videos",
+                "entries": [
+                    {"id": "dup123", "title": "Shared Video", "duration": 100, "upload_date": "20200101"},
+                    {"id": "vid_only", "title": "Videos Only", "duration": 50, "upload_date": "20200102"},
+                ],
+            },
+            {
+                "title": "Live",
+                "entries": [
+                    {"id": "dup123", "title": "Shared Video (Live VOD)", "duration": 100,
+                     "upload_date": "20200101", "live_status": "was_live"},
+                    {"id": "live_only", "title": "Live Only", "duration": 200,
+                     "upload_date": "20200103", "live_status": "was_live"},
+                ],
+            },
+        ],
+    }
+
+    result = walk_playlist_entries(fake_info, include_shorts=True)
+    ids = [v["id"] for v in result]
+
+    assert ids.count("dup123") == 1
+    assert sorted(ids) == ["dup123", "live_only", "vid_only"]
+    # First-seen wins — the Videos-tab copy, not the Live-tab copy that
+    # arrived second and got silently discarded by the `seen` check.
+    dup_entry = next(v for v in result if v["id"] == "dup123")
+    assert dup_entry["title"] == "Shared Video"
+
+
+def test_walk_drops_live_and_upcoming_but_keeps_was_live():
+    fake_info = {
+        "title": "Fake Channel",
+        "entries": [
+            {
+                "title": "Live",
+                "entries": [
+                    {"id": "currently_live", "title": "Live Now", "live_status": "is_live"},
+                    {"id": "scheduled", "title": "Starts Soon", "live_status": "is_upcoming"},
+                    {"id": "archived", "title": "Past Stream", "live_status": "was_live"},
+                ],
+            },
+        ],
+    }
+    result = walk_playlist_entries(fake_info, include_shorts=True)
+    ids = [v["id"] for v in result]
+    assert ids == ["archived"]
+
+
+def test_walk_excludes_shorts_tab_when_disabled():
+    fake_info = {
+        "title": "Fake Channel",
+        "entries": [
+            {"title": "Videos", "entries": [{"id": "v1", "title": "A Video"}]},
+            {"title": "Shorts", "entries": [{"id": "s1", "title": "A Short"}]},
+        ],
+    }
+    with_shorts = walk_playlist_entries(fake_info, include_shorts=True)
+    without_shorts = walk_playlist_entries(fake_info, include_shorts=False)
+    assert sorted(v["id"] for v in with_shorts) == ["s1", "v1"]
+    assert sorted(v["id"] for v in without_shorts) == ["v1"]
+
+
+# ---------------------------------------------------------------------------
+# Bot-check detection, against real observed message strings
+# ---------------------------------------------------------------------------
+
+def test_bot_check_matches_real_sign_in_message():
+    msg = "ERROR: [youtube] jNQXAC9IVRw: Sign in to confirm you're not a bot. This helps protect our community. Learn more"
+    assert is_bot_check_error(msg)
+
+
+def test_bot_check_matches_real_429_message():
+    # The exact message this project produced when a language wildcard
+    # matched too many auto-translated subtitle tracks in one request.
+    msg = "Unable to download video subtitles for 'en-de': HTTP Error 429: Too Many Requests"
+    assert is_bot_check_error(msg)
+
+
+def test_bot_check_does_not_match_unrelated_errors():
+    for msg in ["Video unavailable", "This video is private", "HTTP Error 404: Not Found"]:
+        assert not is_bot_check_error(msg)

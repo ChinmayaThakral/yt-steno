@@ -12,7 +12,10 @@ import re
 import sqlite3
 import threading
 import time
+from pathlib import Path
 from typing import Optional
+
+from yt_dlp import YoutubeDL
 
 # ---------------------------------------------------------------------------
 # VTT parsing
@@ -414,3 +417,149 @@ class Store:
             d["url"] = f"https://youtu.be/{d['video_id']}?t={int(d['at'] or 0)}"
             results.append(d)
         return results
+
+
+# ---------------------------------------------------------------------------
+# yt-dlp integration
+# ---------------------------------------------------------------------------
+
+BOT_CHECK_RE = re.compile(r"sign in|confirm you.?re not a bot|429|too many requests", re.I)
+
+
+def is_bot_check_error(message: str) -> bool:
+    return bool(BOT_CHECK_RE.search(message or ""))
+
+
+def walk_playlist_entries(
+    node: Optional[dict],
+    include_shorts: bool = True,
+    depth: int = 0,
+    seen: Optional[set] = None,
+    out: Optional[list] = None,
+) -> list[dict]:
+    """Recursively flatten a yt-dlp flat-extraction info dict (channel ->
+    nested tab playlists -> video entries) into a deduped video list. Pulled
+    out of enumerate_channel so it's directly testable against a constructed
+    fake info dict, without any network call — this is the one branch where
+    a wrong result (a video counted twice) is invisible downstream: it just
+    silently doubles that video's weight in every bundle and in search."""
+    if seen is None:
+        seen = set()
+    if out is None:
+        out = []
+    if node is None or depth > 3:
+        return out
+
+    entries = node.get("entries")
+    if entries is None:
+        vid = node.get("id")
+        if not vid or vid in seen:
+            return out
+        if node.get("live_status") in ("is_live", "is_upcoming"):
+            return out
+        seen.add(vid)
+        out.append({
+            "id": vid,
+            "title": node.get("title") or vid,
+            "url": f"https://www.youtube.com/watch?v={vid}",
+            "duration": node.get("duration"),
+            "upload_date": node.get("upload_date") or node.get("release_timestamp"),
+        })
+        return out
+
+    tab_title = str(node.get("title") or "").strip().lower()
+    if depth == 1 and not include_shorts and tab_title == "shorts":
+        return out
+    for e in entries:
+        walk_playlist_entries(e, include_shorts, depth + 1, seen, out)
+    return out
+
+
+def enumerate_channel(url: str, limit: int = 0, include_shorts: bool = True) -> tuple[list[dict], str]:
+    """List a channel's videos without touching each video page. Channel URLs
+    resolve to nested tab playlists (Videos / Shorts / Live); we walk them to
+    depth 3, dedupe by id, and drop live/upcoming streams.
+
+    NOTE on `limit`: it's passed to yt-dlp as `playlistend`, which caps each
+    tab *independently* during extraction — not the combined total. On a
+    channel with active Videos/Live/Shorts tabs, the Videos tab alone can
+    fill the whole limit before the walk ever reaches Live or Shorts, so a
+    low limit can mean zero Shorts even with include_shorts=True. The
+    post-walk videos[:limit] slice below keeps the final *count* correct,
+    but in practice `limit` means "newest N uploads," not "newest N items
+    across the channel." See the README for the user-facing version of this."""
+    opts = {
+        "extract_flat": "in_playlist",
+        "skip_download": True,
+        "quiet": True,
+        "no_warnings": True,
+        "noprogress": True,
+        "ignoreerrors": True,
+    }
+    if limit:
+        opts["playlistend"] = limit
+
+    with YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(url, download=False)
+
+    if info is None:
+        return [], ""
+
+    videos = walk_playlist_entries(info, include_shorts)
+    if limit:
+        videos = videos[:limit]
+
+    source = info.get("channel") or info.get("uploader") or info.get("title") or "channel"
+    return videos, source
+
+
+def choose_best_vtt(workdir: Path, video_id: str, lang: str) -> Optional[Path]:
+    candidates = sorted(workdir.glob(f"{video_id}.*.vtt")) + sorted(workdir.glob(f"{video_id}.vtt"))
+    if not candidates:
+        return None
+
+    def rank(p: Path):
+        stem = p.name[:-4]  # strip ".vtt"
+        prefix = f"{video_id}."
+        tag = stem[len(prefix):] if stem.startswith(prefix) else ""
+        exact = 0 if tag == lang else 1
+        orig = 1 if tag.endswith("-orig") else 0
+        return (exact, orig, len(tag))
+
+    candidates.sort(key=rank)
+    return candidates[0]
+
+
+def fetch_captions(
+    video_id: str,
+    url: str,
+    workdir: Path,
+    lang: str = "en",
+    auto: bool = True,
+    browser: Optional[str] = None,
+    pause: float = 0.6,
+) -> dict:
+    """Fetch metadata + write caption files for one video in a single
+    request (extract_info(download=True) with skip_download=True writes
+    subs and returns metadata; ydl.download() alone throws metadata away)."""
+    opts = {
+        "skip_download": True,
+        "writesubtitles": True,
+        "writeautomaticsub": auto,
+        "subtitlesformat": "vtt/best",
+        "outtmpl": str(workdir / "%(id)s.%(ext)s"),
+        "ignoreerrors": True,
+        "retries": 3,
+        "extractor_retries": 2,
+        "sleep_interval_requests": pause,
+        "quiet": True,
+        "no_warnings": True,
+        "noprogress": True,
+    }
+    opts["subtitleslangs"] = ["all", "-live_chat"] if lang == "all" else [lang, f"{lang}.*"]
+    if browser:
+        opts["cookiesfrombrowser"] = (browser,)
+
+    with YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+    return info or {}
