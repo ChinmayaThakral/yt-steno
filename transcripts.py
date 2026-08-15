@@ -533,6 +533,33 @@ def choose_best_vtt(workdir: Path, video_id: str, lang: str) -> Optional[Path]:
     return candidates[0]
 
 
+class _ErrorCapture:
+    """Passed to yt-dlp as a logger. With ignoreerrors=True (required so one
+    bad video doesn't abort an entire run), extract_info() swallows the real
+    failure reason and just returns None or {} — the caller's except block
+    never sees it, so a private, deleted, or age-restricted video was
+    silently getting misclassified downstream as a working video that just
+    happened to have no captions. This captures the actual message yt-dlp
+    reported so fetch_captions can re-raise it, and the caller's existing
+    bot-check vs unavailable vs generic-failure classification stays a
+    single code path instead of a second one guessing at "unavailable" for
+    every empty result, including ones that were actually a bot check."""
+    def __init__(self):
+        self.last_error = None
+
+    def debug(self, msg):
+        pass
+
+    def info(self, msg):
+        pass
+
+    def warning(self, msg):
+        self.last_error = msg
+
+    def error(self, msg):
+        self.last_error = msg
+
+
 def fetch_captions(
     video_id: str,
     url: str,
@@ -544,7 +571,12 @@ def fetch_captions(
 ) -> dict:
     """Fetch metadata + write caption files for one video in a single
     request (extract_info(download=True) with skip_download=True writes
-    subs and returns metadata; ydl.download() alone throws metadata away)."""
+    subs and returns metadata; ydl.download() alone throws metadata away).
+
+    Raises with yt-dlp's actual error text if extraction failed (private,
+    deleted, age-restricted, bot check, etc.) rather than returning an empty
+    dict silently — see _ErrorCapture for why that distinction matters."""
+    capture = _ErrorCapture()
     opts = {
         "skip_download": True,
         "writesubtitles": True,
@@ -558,6 +590,7 @@ def fetch_captions(
         "quiet": True,
         "no_warnings": True,
         "noprogress": True,
+        "logger": capture,
     }
     opts["subtitleslangs"] = ["all", "-live_chat"] if lang == "all" else [lang, f"{lang}.*"]
     if browser:
@@ -565,4 +598,7 @@ def fetch_captions(
 
     with YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=True)
-    return info or {}
+
+    if not info:
+        raise RuntimeError(capture.last_error or "yt-dlp returned no data for this video")
+    return info

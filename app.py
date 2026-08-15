@@ -81,6 +81,11 @@ def process_one_video(run_id: str, v: dict, options: dict, cancel_event: threadi
             f.unlink(missing_ok=True)
 
     try:
+        # fetch_captions raises with yt-dlp's real error text if extraction
+        # failed (private, deleted, age-restricted, bot check, ...) instead
+        # of returning empty — see transcripts._ErrorCapture. That keeps
+        # every failure reason running through the one classification below,
+        # rather than a second branch here that would have to guess.
         T.fetch_captions(vid, v["url"], workdir, lang=options["lang"], auto=options["auto"],
                           browser=options.get("browser"), pause=options["pause"])
 
